@@ -11,7 +11,8 @@
 #include <sys/stat.h>
 #include <fstream>
 #include <sstream>
-
+#include <fcntl.h>
+#include <sys/select.h>
 
 #include "httpd.h"
 
@@ -26,8 +27,8 @@ std::map<std::string, std::string> contentTypes = {
     {".html", "text/html"},
     {".htm", "text/html"},
     {".txt", "text/plain"},
-    // {".css", "text/css"},
-    // {".js", "application/javascript"},
+    {".css", "text/css"},
+    {".js", "application/javascript"},
     {".jpg", "image/jpeg"},
     {".jpeg", "image/jpeg"},
     {".png", "image/png"},
@@ -278,10 +279,6 @@ HTTPMessage handlerUrl(HTTPMessage http_msg, string doc_root){
         // 文件无法打开，返回500响应
         http_msg.response_code = 500;
         return http_msg;
-    }else{
-        char buffer[4096];
-        file.read(buffer, sizeof(buffer));
-        http_msg.body = buffer;
     }
     // 获取文件扩展名
     size_t dotPos = http_msg.path.find_last_of(".");
@@ -296,8 +293,10 @@ HTTPMessage handlerUrl(HTTPMessage http_msg, string doc_root){
         }
     }
     // 设置文件大小为响应大小
-    http_msg.content_length = fileInfo.st_size;
+    std::string fileContent((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    http_msg.content_length = fileContent.size();
     http_msg.response_code = 200;
+    http_msg.body = fileContent;
     return http_msg;
 }
 
@@ -308,7 +307,6 @@ void* handleClient(void* arg){
     int clientSocket = threadArgs->clientSocket;
     std::string doc_root = threadArgs->doc_root;
     std::time_t start_time = std::time(nullptr);
-
     while (true) {
         // 定义最大请求体
         char buffer[4096];
@@ -319,8 +317,6 @@ void* handleClient(void* arg){
         timeout.tv_usec = 0;
         if (setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
             std::cerr << "Error setting timeout" << std::endl;
-            close(clientSocket);
-            pthread_exit(NULL);
             break;
         }
         // 从客户端套接字读取HTTP请求
@@ -332,8 +328,6 @@ void* handleClient(void* arg){
                 std::cerr << "Read data error" << std::endl;
             }
             // 超时/读取数据异常都关掉客户端套接字
-            close(clientSocket);
-            pthread_exit(NULL);
             break;
         }
         // 校验是否超时（但是好像recv会一直等到能拿数据，所以不会工作）
@@ -341,8 +335,7 @@ void* handleClient(void* arg){
         double elapsed_seconds = std::difftime(end_time, start_time);
         if (elapsed_seconds > 5) {
             // 关闭客户端套接字
-            close(clientSocket);
-            pthread_exit(NULL);
+            break;
         }
         // 处理HTTP请求
         std::string request(buffer, bytesRead);
@@ -351,17 +344,18 @@ void* handleClient(void* arg){
         if (http_response.is_close == true) {
             // 关闭客户端套接字
             std::cerr << "Connection close" << std::endl;
-            close(clientSocket);
-            pthread_exit(NULL);
+            break;
         }
         // 处理路由
         http_response = handlerUrl(http_response, doc_root);
         // 其他情况发送套接字
         std::string response_str = http_response.parseResponse(clientSocket);
-        std::cerr << "Response: " << response_str << std::endl;
         send(clientSocket, response_str.c_str(), response_str.size(), 0);
     }
+    close(clientSocket);
+    pthread_exit(NULL);
 }
+
 
 void start_httpd(unsigned short port, string doc_root) {
     int serverSocket, clientSocket;
