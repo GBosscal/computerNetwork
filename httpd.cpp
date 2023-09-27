@@ -268,6 +268,38 @@ auto ThreadPool::enqueue(F&& f, Args&&... args) -> std::future<typename std::res
     return res;
 }
 
+bool isPathSafe(const std::string& path) {
+    // 检查路径是否包含 ..，如果包含则不安全
+    if (path.find("..") != std::string::npos) {
+        return false;
+    }
+    
+    // 定义不安全的字符集
+    const std::string unsafeCharacters = "/\\:*?\"<>|";
+    // 检查路径中是否包含不安全字符
+    for (char c : path) {
+        if (unsafeCharacters.find(c) != std::string::npos) {
+            return true; // 发现不安全字符
+        }
+    }
+
+    // 如果没有发现安全问题，返回 true
+    return true;
+}
+
+std::string normalizePath(string doc_root, const std::string& path) {
+    // 确保路径以文档根开头
+    std::string fullPath = doc_root + path;
+
+    // 如果路径不安全，返回一个默认路径或错误响应
+    if (!isPathSafe(fullPath)) {
+        return "error_404.html";
+    }
+
+    // 返回规范化后的路径
+    return fullPath;
+}
+
 HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
     string header = http_msg.headers;
     size_t startPos = 0;
@@ -355,8 +387,8 @@ HTTPMessage handlerUrl(HTTPMessage http_msg, string doc_root){
     struct stat fileInfo;
     // 判断是否追加index.html
     http_msg.path = getDefaultFilePath(http_msg.path); 
-    // 构建完整的文件路径
-    std::string fullPath = doc_root + http_msg.path;
+    // 判断路经是否安全
+    std::string fullPath = normalizePath(doc_root, http_msg.path);
     // 打印文件路径
     std::cerr << "Path: " << http_msg.path << std::endl;
     std::cerr << "Fullpath: " << fullPath << std::endl;
@@ -539,7 +571,7 @@ void start_httpd(unsigned short port, string doc_root, int thread_num) {
 
     // 多线程实现方式
     // while (true) {
-    //     // 接受客户端连接
+    //     // 接受客户端连接Implemented thread pooling
     //     clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
     //     if (clientSocket == -1) {
     //         std::cerr << "Error accepting connection" << std::endl;
