@@ -74,6 +74,8 @@
         "queue": "cpp",
         "stack": "cpp",
         "sstream": "cpp",
-        "fstream": "cpp"
+        "fstream": "cpp",
+        "thread": "cpp",
+        "condition_variable": "cpp"
     }
 }

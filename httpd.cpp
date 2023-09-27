@@ -13,6 +13,12 @@
 #include <sstream>
 #include <fcntl.h>
 #include <sys/select.h>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <future>
+#include <functional>
 
 #include "httpd.h"
 
@@ -172,6 +178,96 @@ string getErrorMsg(int code){
     }
 }
 
+// 定义一个线程池
+class ThreadPool {
+public:
+    ThreadPool(size_t numThreads);
+    template <class F, class... Args>
+    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
+    ~ThreadPool();
+private:
+    // 线程需要执行的任务类型
+    using Task = std::function<void()>;
+
+    // 线程池
+    std::vector<std::thread> workers;
+    // 任务队列
+    std::queue<Task> tasks;
+
+    // 互斥锁，用于保护任务队列
+    std::mutex queueMutex;
+    // 条件变量，用于通知线程任务队列有任务可以执行
+    std::condition_variable condition;
+    // 是否停止线程池
+    bool stop;
+};
+
+// 构造函数
+inline ThreadPool::ThreadPool(size_t numThreads) : stop(false) {
+    for (size_t i = 0; i < numThreads; ++i) {
+        workers.emplace_back(
+            [this] {
+                while (true) {
+                    Task task;
+
+                    // 从任务队列中取出任务
+                    {
+                        std::unique_lock<std::mutex> lock(this->queueMutex);
+                        this->condition.wait(lock, [this] { return this->stop || !this->tasks.empty(); });
+                        if (this->stop && this->tasks.empty()) {
+                            return;
+                        }
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+
+                    // 执行任务
+                    task();
+                }
+            }
+        );
+    }
+}
+
+// 析构函数
+inline ThreadPool::~ThreadPool() {
+    {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        stop = true;
+    }
+    condition.notify_all();
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+}
+
+// 提交任务到线程池
+template <class F, class... Args>
+auto ThreadPool::enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type> {
+    using return_type = typename std::result_of<F(Args...)>::type;
+
+    auto task = std::make_shared<std::packaged_task<return_type()>>(
+        std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+    );
+
+    std::future<return_type> res = task->get_future();
+
+    {
+        std::unique_lock<std::mutex> lock(queueMutex);
+
+        // 停止状态不接受新任务
+        if (stop) {
+            throw std::runtime_error("enqueue on stopped ThreadPool");
+        }
+
+        // 将任务加入队列
+        tasks.emplace([task]() { (*task)(); });
+    }
+
+    condition.notify_one();
+    return res;
+}
+
 HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
     string header = http_msg.headers;
     size_t startPos = 0;
@@ -186,7 +282,7 @@ HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
             http_msg.response_code = 400;
             return http_msg;
         }else {
-            // 获取Connection,判断是否为close
+            // 记录所有的header
             std::string firstWord = single_header.substr(0, colonPos);
             firstWord.erase(0, firstWord.find_first_not_of(" "));  // 去除前导空格
             firstWord.erase(firstWord.find_last_not_of(" ") + 1);  // 去除尾部空格
@@ -356,8 +452,58 @@ void* handleClient(void* arg){
     pthread_exit(NULL);
 }
 
+void handlerWithThread(ThreadPool& threadPool, int clientSocket, string doc_root) {
+    std::time_t start_time = std::time(nullptr);
+    while (true) {
+        // 定义最大请求体
+        char buffer[4096];
+        memset(buffer, 0, sizeof(buffer));
+        // 通过socket来强行中断链接
+        struct timeval timeout;
+        timeout.tv_sec = 5;
+        timeout.tv_usec = 0;
+        if (setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+            std::cerr << "Error setting timeout" << std::endl;
+            break;
+        }
+        // 从客户端套接字读取HTTP请求
+        ssize_t bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
+        if (bytesRead <= 0) {
+            if (errno == EWOULDBLOCK || errno == EAGAIN) {
+                std::cerr << "Connection timed out" << std::endl;
+            }else {
+                std::cerr << "Read data error" << std::endl;
+            }
+            // 超时/读取数据异常都关掉客户端套接字
+            break;
+        }
+        // 校验是否超时（但是好像recv会一直等到能拿数据，所以不会工作）
+        std::time_t end_time = std::time(nullptr);
+        double elapsed_seconds = std::difftime(end_time, start_time);
+        if (elapsed_seconds > 5) {
+            // 关闭客户端套接字
+            break;
+        }
+        // 处理HTTP请求
+        std::string request(buffer, bytesRead);
+        HTTPMessage http_response = handleHttpRequest(request);
+        // 校验链接是否要关闭
+        if (http_response.is_close == true) {
+            // 关闭客户端套接字
+            std::cerr << "Connection close" << std::endl;
+            break;
+        }
+        // 处理路由
+        http_response = handlerUrl(http_response, doc_root);
+        // 其他情况发送套接字
+        std::string response_str = http_response.parseResponse(clientSocket);
+        send(clientSocket, response_str.c_str(), response_str.size(), 0);
+    }
+    close(clientSocket);
+}
 
-void start_httpd(unsigned short port, string doc_root) {
+
+void start_httpd(unsigned short port, string doc_root, int thread_num) {
     int serverSocket, clientSocket;
     struct sockaddr_in serverAddr, clientAddr;
     socklen_t clientAddrLen = sizeof(clientAddr);
@@ -389,30 +535,45 @@ void start_httpd(unsigned short port, string doc_root) {
     }
 
     cerr << "Starting server (port: " << port <<
-        ", doc_root: " << doc_root << ")" << endl;
+        ", doc_root: " << doc_root << "ThreadPool: " << thread_num << ")" << endl;
 
+    // 多线程实现方式
+    // while (true) {
+    //     // 接受客户端连接
+    //     clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
+    //     if (clientSocket == -1) {
+    //         std::cerr << "Error accepting connection" << std::endl;
+    //         continue;
+    //     }
+
+    //     // 使用pthread创建一个新线程来处理客户端连接
+    //     pthread_t clientThread;
+    //     ThreadArgs args;
+    //     args.clientSocket = clientSocket;
+    //     args.doc_root = doc_root;
+
+    //     if (pthread_create(&clientThread, NULL, handleClient, &args) != 0) {
+    //         std::cerr << "Error creating thread" << std::endl;
+    //         close(clientSocket);
+    //         continue;
+    //     }
+
+    //     // 分离线程，不阻塞主线程
+    //     pthread_detach(clientThread);
+    // }
+
+    // 创建线程池
+    ThreadPool threadPool(thread_num);
+    // 线程池实现方式
     while (true) {
-        // 接受客户端连接
-        clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
+        struct sockaddr_in clientAddr;
+        socklen_t clientAddrLen = sizeof(clientAddr);
+        int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
         if (clientSocket == -1) {
-            std::cerr << "Error accepting connection" << std::endl;
+            cerr << "Error accepting connection" << endl;
             continue;
         }
-
-        // 使用pthread创建一个新线程来处理客户端连接
-        pthread_t clientThread;
-        ThreadArgs args;
-        args.clientSocket = clientSocket;
-        args.doc_root = doc_root;
-
-        if (pthread_create(&clientThread, NULL, handleClient, &args) != 0) {
-            std::cerr << "Error creating thread" << std::endl;
-            close(clientSocket);
-            continue;
-        }
-
-        // 分离线程，不阻塞主线程
-        pthread_detach(clientThread);
+        threadPool.enqueue(handlerWithThread, std::ref(threadPool), clientSocket, doc_root);
     }
 
     // 关闭服务器套接字

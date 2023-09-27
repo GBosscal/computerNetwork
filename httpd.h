@@ -5,6 +5,6 @@
 
 using namespace std;
 
-void start_httpd(unsigned short port, string doc_root);
+void start_httpd(unsigned short port, string doc_root, int thread_num);
 
 #endif // HTTPD_H
