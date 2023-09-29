@@ -3,7 +3,7 @@ CC=g++
 CFLAGS=-ggdb -Wall -Wextra -pedantic -Werror
 DEPS = httpd.h
 SRCS = httpd.cpp
-MAIN_SRCS = main.c $(SRCS)
+MAIN_SRCS = main.cpp $(SRCS)
 MAIN_OBJS = $(MAIN_SRCS:.c=.o)
 
 default: httpd

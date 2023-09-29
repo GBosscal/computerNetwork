@@ -1,0 +1,10 @@
+Q1. Does the latency of a small request vary between the two threading models for pools of size 5 when evaluated at concurrency levels of (2,3,4,5}?
+
+
+Q2. Does the throughput of large requests vary between the two threading models for pools of size 5 when evalutaed at concurrency levels of (2,3,4,5)?
+
+
+Q3. Does the latency of a small request vary between the two threading models for pools of size 5 when evaluated at concurrency levels of (10,20)?
+
+
+Q4. Does the throughput of large requests vary between the two threading models for pools of size 5 when evalutaed at concurrency levels of {10,20)?
