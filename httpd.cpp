@@ -19,6 +19,7 @@
 #include <condition_variable>
 #include <future>
 #include <functional>
+#include <arpa/inet.h>
 
 #include "httpd.h"
 
@@ -118,7 +119,7 @@ public:
         }
         // 获取请求头信息
         if (requestLineEnd != std::string::npos && pos != std::string::npos){
-            headers = request.substr(requestLineEnd + 2, pos); // +2 是因为把请求方式那行的\r\n都去掉
+            headers = msg.substr(requestLineEnd + 2, pos); // +2 是因为把请求方式那行的\r\n都去掉， -2是把末尾的\r\n\r\n中的后者给去掉
         }
     }
 
@@ -300,6 +301,87 @@ std::string normalizePath(string doc_root, const std::string& path) {
     return fullPath;
 }
 
+// 自定义类表示规则
+class AccessRule {
+public:
+    std::string type; // 规则类型，例如 "allow" 或 "deny"
+    std::string cidrIP; // CIDR格式的IP地址范围
+    struct sockaddr_in range;
+
+    AccessRule(const std::string& t, const std::string& ip)
+        : type(t), cidrIP(ip) {}
+
+};
+
+// 尝试打开.htaccess，读取数据并实例化AccessRule
+std::vector<AccessRule> getRuleFromAccess() {
+    std::ifstream htaccessFile(".htaccess"); // 尝试打开.htaccess文件
+    std::vector<AccessRule> accessRules; // 存储规则的向量
+
+    if (htaccessFile.is_open()) {
+        std::string line;
+        while (std::getline(htaccessFile, line)) {
+            // 在此处解析每一行规则
+            if (line.find("allow from") != std::string::npos) {
+                // 如果包含"allow from"，将其视为allow规则
+                std::string cidrIP = line.substr(line.find("allow from") + 11);
+                accessRules.push_back(AccessRule("allow", cidrIP));
+            } else if (line.find("deny from") != std::string::npos) {
+                // 如果包含"deny from"，将其视为deny规则
+                std::string cidrIP = line.substr(line.find("deny from") + 10);
+                accessRules.push_back(AccessRule("deny", cidrIP));
+            }
+        }
+        htaccessFile.close();
+    } else {
+        std::cout << ".htaccess 文件不存在或无法打开." << std::endl;
+    }
+
+    // 输出存储的规则
+    for (const AccessRule& rule : accessRules) {
+        std::cout << "Rule Type: " << rule.type << ", CIDR IP: " << rule.cidrIP << std::endl;
+    }
+
+    return accessRules;
+}
+
+// 将IP地址转换为整数
+unsigned int ipToUint(const std::string& ip) {
+    std::vector<unsigned int> parts;
+    std::stringstream ss(ip);
+    std::string part;
+    
+    while (getline(ss, part, '.')) {
+        parts.push_back(std::stoi(part));
+    }
+    
+    unsigned int result = 0;
+    for (int i = 0; i < 4; ++i) {
+        result |= (parts[i] << (24 - (8 * i)));
+    }
+    
+    return result;
+}
+
+// 检查IP是否在CIDR范围内
+bool isIpInCidr(const std::string& ip, const std::string& cidr) {
+    size_t slashPos = cidr.find('/');
+    if (slashPos == std::string::npos) {
+        std::cerr << "Invalid CIDR format: " << cidr << std::endl;
+        return false;
+    }
+    
+    std::string cidrIp = cidr.substr(0, slashPos);
+    std::string cidrMaskStr = cidr.substr(slashPos + 1);
+    int cidrMask = std::stoi(cidrMaskStr);
+    
+    unsigned int ipInt = ipToUint(ip);
+    unsigned int cidrIpInt = ipToUint(cidrIp);
+    unsigned int cidrMaskInt = (0xFFFFFFFFU << (32 - cidrMask));
+    
+    return (ipInt & cidrMaskInt) == (cidrIpInt & cidrMaskInt);
+}
+
 HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
     string header = http_msg.headers;
     size_t startPos = 0;
@@ -307,7 +389,6 @@ HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
     while ((endPos = header.find("\r\n", startPos)) != std::string::npos) {
         // 获取单个header
         std::string single_header = header.substr(startPos, endPos - startPos);
-        std::cerr << "SingleHeader: " << single_header << std::endl;
         size_t colonPos = single_header.find(':');
         // 校验header,如果没有:的话，则直接返回异常
         if (colonPos == std::string::npos) {
@@ -330,12 +411,42 @@ HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
     return http_msg;
 }
 
+bool CheckingHostByAccessRules(string host){
+    bool all_block = false;
+    // 获取htaccess的数据
+    std::vector<AccessRule> accessRules = getRuleFromAccess();
+    // 根据每一个规则进行搜索
+    for (const AccessRule& rule : accessRules) {
+        if (isIpInCidr(host,rule.cidrIP)){
+            if (rule.type == "deny"){
+                return false;
+            }else{
+                return true;
+            }
+        }
+        if (rule.cidrIP == "0.0.0.0/0"){
+            all_block  = (rule.type == "deny");
+        }
+    }
+    if (all_block){
+        return false;
+    }else{
+        return true;
+    }
+}
+
 HTTPMessage CheckingHeader(HTTPMessage http_msg) {
+    
+    // 初始化响应时间为400
     http_msg.response_code = 400;
     for (const auto& header : http_msg.request_headers) {
-        std::cout << "解析后的请求头了啦: " << header.first << ": " << header.second << std::endl;
         if (header.first == "Host") {
-            http_msg.response_code = 0;
+            // 通过CIRD校验规则
+            if (CheckingHostByAccessRules(header.second)){
+                http_msg.response_code = 0;
+            }else{
+                http_msg.response_code = 403;
+            }
         }else if (header.first == "Connection" && header.second == "close") {
             http_msg.is_close = true;
         }
@@ -473,6 +584,11 @@ void* handleClient(void* arg){
             // 关闭客户端套接字
             std::cerr << "Connection close" << std::endl;
             break;
+        }else if (http_response.response_code != 0){
+            // 要是有响应代码的话，直接发送套接字
+            std::string response_str = http_response.parseResponse(clientSocket);
+            send(clientSocket, response_str.c_str(), response_str.size(), 0);
+            continue;
         }
         // 处理路由
         http_response = handlerUrl(http_response, doc_root);
@@ -524,7 +640,12 @@ void handlerWithThread(ThreadPool& threadPool, int clientSocket, string doc_root
             // 关闭客户端套接字
             std::cerr << "Connection close" << std::endl;
             break;
-        }
+        }else if (http_response.response_code != 0){
+            // 要是有响应代码的话，直接发送套接字
+            std::string response_str = http_response.parseResponse(clientSocket);
+            send(clientSocket, response_str.c_str(), response_str.size(), 0);
+            continue;
+        } 
         // 处理路由
         http_response = handlerUrl(http_response, doc_root);
         // 其他情况发送套接字
