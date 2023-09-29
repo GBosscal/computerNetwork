@@ -76,6 +76,7 @@
         "sstream": "cpp",
         "fstream": "cpp",
         "thread": "cpp",
-        "condition_variable": "cpp"
+        "condition_variable": "cpp",
+        "future": "cpp"
     }
 }

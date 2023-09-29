@@ -1,61 +1,29 @@
 #include <iostream>
 #include <string>
 #include <cstring>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
-#include <pthread.h>
 #include <map>
 #include <vector>
 #include <ctime>
-#include <sys/stat.h>
 #include <fstream>
 #include <sstream>
-#include <fcntl.h>
-#include <sys/select.h>
 #include <thread>
 #include <queue>
 #include <mutex>
 #include <condition_variable>
 #include <future>
 #include <functional>
+#include <sys/select.h>
+#include <sys/stat.h>
+#include <pthread.h>
+#include <sys/socket.h>
 #include <arpa/inet.h>
-
+#include <unistd.h>
+#include <fcntl.h>
 #include "httpd.h"
 
 using namespace std;
 
-struct ThreadArgs {
-    int client_socket;
-    std::string doc_root;
-};
-
-std::map<std::string, std::string> contentTypes = {
-    {".html", "text/html"},
-    {".htm", "text/html"},
-    {".txt", "text/plain"},
-    {".css", "text/css"},
-    {".js", "application/javascript"},
-    {".jpg", "image/jpeg"},
-    {".jpeg", "image/jpeg"},
-    {".png", "image/png"},
-};
-
-std::map<int, std::string> code2msg = {
-    {200, "OK"},
-    {400, ""},
-    {403, ""},
-    {404, "Not Found"},
-};
-
-std::string getDefaultFilePath(const std::string& path) {
-    // 如果路径以'/'结尾，则追加index.html"
-    if (path.back() == '/') {
-        return path + "index.html";
-    }
-    return path;
-}
-
+// 读取文件的方法
 std::string readFile(const std::string& filename) {
     std::ifstream file(filename);
     std::string content;
@@ -70,6 +38,7 @@ std::string readFile(const std::string& filename) {
     return content;
 }
 
+// HTTPMessage对象
 class HTTPMessage {
 public:
 
@@ -155,6 +124,7 @@ public:
         std::string response = protocol + " " + std::to_string(response_code) + " " + response_msg + "\r\n"; // 响应协议，响应码，响应信息
         // 响应头信息
         response = response + "Server: " + std::string(server_ip) + "\r\n" + "Content-Type: " + content_type + "\r\n";
+        std::cerr << "response_time" << response_time << std::endl;
         if (!response_time.empty()){
             response = response + "Last-Modified: " + response_time + "\r\n";
         }
@@ -170,16 +140,13 @@ public:
 
 };
 
-string getErrorMsg(int code){
-    auto it = code2msg.find(code);
-    if (it != code2msg.end()) {
-        return it->second;
-    }else {
-        return "unKown";
-    }
-}
+// 往多线程中传入数据的结构体
+struct ThreadArgs {
+    int client_socket;
+    std::string doc_root;
+};
 
-// 定义一个线程池
+// 定义一个线程池类
 class ThreadPool {
 public:
     ThreadPool(size_t num_threads);
@@ -203,7 +170,19 @@ private:
     bool stop;
 };
 
-// 构造函数
+// 表示通行/拒绝规则的类
+class AccessRule {
+public:
+    std::string type; // 规则类型，例如 "allow" 或 "deny"
+    std::string cidr_ip; // CIDR格式的IP地址范围
+    struct sockaddr_in range;
+
+    AccessRule(const std::string& t, const std::string& ip)
+        : type(t), cidr_ip(ip) {}
+
+};
+
+// 线程池构造函数
 inline ThreadPool::ThreadPool(size_t num_threads) : stop(false) {
     for (size_t i = 0; i < num_threads; ++i) {
         workers.emplace_back(
@@ -228,7 +207,7 @@ inline ThreadPool::ThreadPool(size_t num_threads) : stop(false) {
     }
 }
 
-// 析构函数
+// 线程池析构函数
 inline ThreadPool::~ThreadPool() {
     {
         std::unique_lock<std::mutex> lock(queue_mutex);
@@ -267,6 +246,45 @@ auto ThreadPool::enqueue(F&& f, Args&&... args) -> std::future<typename std::res
     return res;
 }
 
+// 响应对应的content-types
+std::map<std::string, std::string> contentTypes = {
+    {".html", "text/html"},
+    {".htm", "text/html"},
+    {".txt", "text/plain"},
+    {".css", "text/css"},
+    {".js", "application/javascript"},
+    {".jpg", "image/jpeg"},
+    {".jpeg", "image/jpeg"},
+    {".png", "image/png"},
+};
+
+// 响应代码对应的错误信息
+std::map<int, std::string> code2msg = {
+    {200, "OK"},
+    {400, "Bad Request"},
+    {403, "Forbidden"},
+    {404, "Not Found"},
+};
+
+// 获取异常的信息
+string getErrorMsg(int code){
+    auto it = code2msg.find(code);
+    if (it != code2msg.end()) {
+        return it->second;
+    }else {
+        return "unKown";
+    }
+}
+
+// 校验路径是否以'/'结尾，如果是则追加index.html"
+std::string getDefaultFilePath(const std::string& path) {
+    if (path.back() == '/') {
+        return path + "index.html";
+    }
+    return path;
+}
+
+// 校验是否为安全的路经
 bool isPathSafe(const std::string& path) {
     // 检查路径是否包含 ..，如果包含则不安全
     if (path.find("..") != std::string::npos) {
@@ -286,6 +304,7 @@ bool isPathSafe(const std::string& path) {
     return true;
 }
 
+// 获取规范化的路径
 std::string normalizePath(string doc_root, const std::string& path) {
     // 确保路径以文档根开头
     std::string full_path = doc_root + path;
@@ -298,18 +317,6 @@ std::string normalizePath(string doc_root, const std::string& path) {
     // 返回规范化后的路径
     return full_path;
 }
-
-// 自定义类表示规则
-class AccessRule {
-public:
-    std::string type; // 规则类型，例如 "allow" 或 "deny"
-    std::string cidr_ip; // CIDR格式的IP地址范围
-    struct sockaddr_in range;
-
-    AccessRule(const std::string& t, const std::string& ip)
-        : type(t), cidr_ip(ip) {}
-
-};
 
 // 尝试打开.htaccess，读取数据并实例化AccessRule
 std::vector<AccessRule> getRuleFromAccess() {
@@ -380,6 +387,52 @@ bool isIpInCidr(const std::string& ip, const std::string& cidr) {
     return (ipInt & cidr_mask_int) == (cidr_ip_int & cidr_mask_int);
 }
 
+// 通过host校验是否符合access中的规则
+bool CheckingHostByAccessRules(string host){
+    bool all_block = false;
+    // 获取htaccess的数据
+    std::vector<AccessRule> access_rules = getRuleFromAccess();
+    // 根据每一个规则进行搜索
+    for (const AccessRule& rule : access_rules) {
+        if (isIpInCidr(host,rule.cidr_ip)){
+            if (rule.type == "deny"){
+                return false;
+            }else{
+                return true;
+            }
+        }
+        if (rule.cidr_ip == "0.0.0.0/0"){
+            all_block  = (rule.type == "deny");
+        }
+    }
+    if (all_block){
+        return false;
+    }else{
+        return true;
+    }
+}
+
+// 校验header是否符合规定
+HTTPMessage CheckingHeader(HTTPMessage http_msg) {
+    
+    // 初始化响应时间为400
+    http_msg.response_code = 400;
+    for (const auto& header : http_msg.request_headers) {
+        if (header.first == "Host") {
+            // 通过CIRD校验规则
+            if (CheckingHostByAccessRules(header.second)){
+                http_msg.response_code = 0;
+            }else{
+                http_msg.response_code = 403;
+            }
+        }else if (header.first == "Connection" && header.second == "close") {
+            http_msg.is_close = true;
+        }
+    }
+    return http_msg;
+}
+
+// 处理请求中的header的方法
 HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
     string header = http_msg.headers;
     size_t start_pos = 0;
@@ -407,87 +460,6 @@ HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
         start_pos = end_pos + 2;
     }
     return http_msg;
-}
-
-bool CheckingHostByAccessRules(string host){
-    bool all_block = false;
-    // 获取htaccess的数据
-    std::vector<AccessRule> access_rules = getRuleFromAccess();
-    // 根据每一个规则进行搜索
-    for (const AccessRule& rule : access_rules) {
-        if (isIpInCidr(host,rule.cidr_ip)){
-            if (rule.type == "deny"){
-                return false;
-            }else{
-                return true;
-            }
-        }
-        if (rule.cidr_ip == "0.0.0.0/0"){
-            all_block  = (rule.type == "deny");
-        }
-    }
-    if (all_block){
-        return false;
-    }else{
-        return true;
-    }
-}
-
-HTTPMessage CheckingHeader(HTTPMessage http_msg) {
-    
-    // 初始化响应时间为400
-    http_msg.response_code = 400;
-    for (const auto& header : http_msg.request_headers) {
-        if (header.first == "Host") {
-            // 通过CIRD校验规则
-            if (CheckingHostByAccessRules(header.second)){
-                http_msg.response_code = 0;
-            }else{
-                http_msg.response_code = 403;
-            }
-        }else if (header.first == "Connection" && header.second == "close") {
-            http_msg.is_close = true;
-        }
-    }
-    return http_msg;
-}
-
-// 处理request并生成response
-HTTPMessage handleHttpRequest(const std::string& request){
-    HTTPMessage http_request;
-    http_request.parseRequest(request);
-
-    // HTTPMessage http_response;
-    // http_response.protocol = http_request.protocol;
-    // http_response.path = http_request.path;
-
-    // 打印各项信息
-    std::cerr << "Method: " << http_request.method << std::endl;
-    std::cerr << "Path: " << http_request.path << std::endl;
-    std::cerr << "protocol: " << http_request.protocol << std::endl;
-    std::cerr << "headers: " << http_request.headers << std::endl;
-    std::cerr << "body: " << http_request.body << std::endl;
-
-    // 校验路经是否为 / ，如果为 / 则映射到 /index.html
-    if (http_request.path == "/"){
-        http_request.path = "/index.html";
-    }
-
-    // 校验请求头是否符合要求
-    http_request = handlerRequestHeader(http_request);
-    if (http_request.response_code != 0) {
-        return http_request;
-    }
-    // 校验请求头是否含有特定的信息，比如是否含有主机信息，是否含有close等。
-    http_request = CheckingHeader(http_request);
-    if (http_request.response_code != 0) {
-        return http_request;
-    } else if (http_request.is_close) {
-        http_request.is_close = true;
-        return http_request;
-    }
-
-    return http_request;
 }
 
 // 处理路由，尝试打开文件了。
@@ -537,13 +509,52 @@ HTTPMessage handlerUrl(HTTPMessage http_msg, string doc_root){
     return http_msg;
 }
 
+// 处理request并生成response
+HTTPMessage handleHttpRequest(const std::string& request){
+    HTTPMessage http_request;
+    http_request.parseRequest(request);
 
+    // HTTPMessage http_response;
+    // http_response.protocol = http_request.protocol;
+    // http_response.path = http_request.path;
+
+    // 打印各项信息
+    std::cerr << "Method: " << http_request.method << std::endl;
+    std::cerr << "Path: " << http_request.path << std::endl;
+    std::cerr << "protocol: " << http_request.protocol << std::endl;
+    std::cerr << "headers: " << http_request.headers << std::endl;
+    std::cerr << "body: " << http_request.body << std::endl;
+
+    // 校验路经是否为 / ，如果为 / 则映射到 /index.html
+    if (http_request.path == "/"){
+        http_request.path = "/index.html";
+    }
+
+    // 校验请求头是否符合要求
+    http_request = handlerRequestHeader(http_request);
+    if (http_request.response_code != 0) {
+        return http_request;
+    }
+    // 校验请求头是否含有特定的信息，比如是否含有主机信息，是否含有close等。
+    http_request = CheckingHeader(http_request);
+    if (http_request.response_code != 0) {
+        return http_request;
+    } else if (http_request.is_close) {
+        http_request.is_close = true;
+        return http_request;
+    }
+
+    return http_request;
+}
+
+// 处理客户端的方法（多线程）
 void* handleClient(void* arg){
     // 拿到传入的参数
     ThreadArgs* thread_args = (ThreadArgs*)arg;
     int client_socket = thread_args->client_socket;
     std::string doc_root = thread_args->doc_root;
-    std::time_t start_time = std::time(nullptr);
+    std::time_t last_time = std::time(nullptr);
+
     while (true) {
         // 定义最大请求体
         char buffer[4096];
@@ -569,7 +580,7 @@ void* handleClient(void* arg){
         }
         // 校验是否超时（但是好像recv会一直等到能拿数据，所以不会工作）
         std::time_t end_time = std::time(nullptr);
-        double elapsed_seconds = std::difftime(end_time, start_time);
+        double elapsed_seconds = std::difftime(end_time, last_time);
         if (elapsed_seconds > 5) {
             // 关闭客户端套接字
             break;
@@ -590,16 +601,24 @@ void* handleClient(void* arg){
         }
         // 处理路由
         http_response = handlerUrl(http_response, doc_root);
+        // 足够大以容纳格式化的时间字符串
+        char time_str[80]; 
+        // 使用strftime将time_t格式化为字符串
+        std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", std::localtime(&last_time));
+        // 追加上次请求时间到响应中
+        http_response.response_time = time_str;
         // 其他情况发送套接字
         std::string response_str = http_response.parseResponse(client_socket);
         send(client_socket, response_str.c_str(), response_str.size(), 0);
+        last_time = std::time(nullptr);
     }
     close(client_socket);
     pthread_exit(NULL);
 }
 
+// 处理客户端的方法（线程池）
 void handlerWithThread(ThreadPool& thread_pool, int client_socket, string doc_root) {
-    std::time_t start_time = std::time(nullptr);
+    std::time_t last_time = std::time(nullptr);
     while (true) {
         // 定义最大请求体
         char buffer[4096];
@@ -625,7 +644,7 @@ void handlerWithThread(ThreadPool& thread_pool, int client_socket, string doc_ro
         }
         // 校验是否超时（但是好像recv会一直等到能拿数据，所以不会工作）
         std::time_t end_time = std::time(nullptr);
-        double elapsed_seconds = std::difftime(end_time, start_time);
+        double elapsed_seconds = std::difftime(end_time, last_time);
         if (elapsed_seconds > 5) {
             // 关闭客户端套接字
             break;
@@ -646,14 +665,21 @@ void handlerWithThread(ThreadPool& thread_pool, int client_socket, string doc_ro
         } 
         // 处理路由
         http_response = handlerUrl(http_response, doc_root);
+        // 足够大以容纳格式化的时间字符串
+        char time_str[80]; 
+        // 使用strftime将time_t格式化为字符串
+        std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", std::localtime(&last_time));
+        // 追加上次请求时间到响应中
+        http_response.response_time = time_str;
         // 其他情况发送套接字
         std::string response_str = http_response.parseResponse(client_socket);
         send(client_socket, response_str.c_str(), response_str.size(), 0);
+        last_time = std::time(nullptr);
     }
     close(client_socket);
 }
 
-
+// 启动一个http的服务器
 void start_httpd(unsigned short port, string doc_root, int thread_num) {
     int server_socket, client_socket;
     struct sockaddr_in server_addr, client_addr;
