@@ -26,7 +26,7 @@
 using namespace std;
 
 struct ThreadArgs {
-    int clientSocket;
+    int client_socket;
     std::string doc_root;
 };
 
@@ -61,9 +61,9 @@ std::string readFile(const std::string& filename) {
     std::string content;
 
     if (file.is_open()) {
-        std::ostringstream contentStream;
-        contentStream << file.rdbuf();
-        content = contentStream.str();
+        std::ostringstream content_stream;
+        content_stream << file.rdbuf();
+        content = content_stream.str();
         file.close();
     }
 
@@ -104,32 +104,32 @@ public:
             body = request.substr(pos + 4);
         }
         // 获取请求方式，请求路经，请求协议
-        size_t requestLineEnd = request.find("\r\n");
-        if (requestLineEnd != std::string::npos) {
-            std::string requestLine = request.substr(0, requestLineEnd);
-            size_t methodEnd = requestLine.find(' ');
+        size_t request_line_end = request.find("\r\n");
+        if (request_line_end != std::string::npos) {
+            std::string request_line = request.substr(0, request_line_end);
+            size_t methodEnd = request_line.find(' ');
             if (methodEnd != std::string::npos) {
-                method = requestLine.substr(0, methodEnd);
-                size_t pathEnd = requestLine.find(' ', methodEnd + 1);
+                method = request_line.substr(0, methodEnd);
+                size_t pathEnd = request_line.find(' ', methodEnd + 1);
                 if (pathEnd != std::string::npos) {
-                    path = requestLine.substr(methodEnd + 1, pathEnd - methodEnd - 1);
-                    protocol = requestLine.substr(pathEnd + 1);
+                    path = request_line.substr(methodEnd + 1, pathEnd - methodEnd - 1);
+                    protocol = request_line.substr(pathEnd + 1);
                 }
             }
         }
         // 获取请求头信息
-        if (requestLineEnd != std::string::npos && pos != std::string::npos){
-            headers = msg.substr(requestLineEnd + 2, pos); // +2 是因为把请求方式那行的\r\n都去掉， -2是把末尾的\r\n\r\n中的后者给去掉
+        if (request_line_end != std::string::npos && pos != std::string::npos){
+            headers = msg.substr(request_line_end + 2, pos); // +2 是因为把请求方式那行的\r\n都去掉
         }
     }
 
-    string parseResponse(int clientSocket) {
+    string parseResponse(int client_socket) {
         // 获取当前服务的IP
-        struct sockaddr_in serverAddr;
-        socklen_t serverAddrLen = sizeof(serverAddr);
-        getsockname(clientSocket, (struct sockaddr*)&serverAddr, &serverAddrLen);
-        char serverIp[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(serverAddr.sin_addr), serverIp, INET_ADDRSTRLEN);
+        struct sockaddr_in server_addr;
+        socklen_t server_addr_len = sizeof(server_addr);
+        getsockname(client_socket, (struct sockaddr*)&server_addr, &server_addr_len);
+        char server_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(server_addr.sin_addr), server_ip, INET_ADDRSTRLEN);
         // 如果是响应代码是400，404，403，500，则需要将固定的html页返回。
         switch (response_code){
             case 400:
@@ -154,7 +154,7 @@ public:
         // 根据msg构建响应
         std::string response = protocol + " " + std::to_string(response_code) + " " + response_msg + "\r\n"; // 响应协议，响应码，响应信息
         // 响应头信息
-        response = response + "Server: " + std::string(serverIp) + "\r\n" + "Content-Type: " + content_type + "\r\n";
+        response = response + "Server: " + std::string(server_ip) + "\r\n" + "Content-Type: " + content_type + "\r\n";
         if (!response_time.empty()){
             response = response + "Last-Modified: " + response_time + "\r\n";
         }
@@ -182,7 +182,7 @@ string getErrorMsg(int code){
 // 定义一个线程池
 class ThreadPool {
 public:
-    ThreadPool(size_t numThreads);
+    ThreadPool(size_t num_threads);
     template <class F, class... Args>
     auto enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
     ~ThreadPool();
@@ -196,7 +196,7 @@ private:
     std::queue<Task> tasks;
 
     // 互斥锁，用于保护任务队列
-    std::mutex queueMutex;
+    std::mutex queue_mutex;
     // 条件变量，用于通知线程任务队列有任务可以执行
     std::condition_variable condition;
     // 是否停止线程池
@@ -204,16 +204,15 @@ private:
 };
 
 // 构造函数
-inline ThreadPool::ThreadPool(size_t numThreads) : stop(false) {
-    for (size_t i = 0; i < numThreads; ++i) {
+inline ThreadPool::ThreadPool(size_t num_threads) : stop(false) {
+    for (size_t i = 0; i < num_threads; ++i) {
         workers.emplace_back(
             [this] {
                 while (true) {
                     Task task;
-
                     // 从任务队列中取出任务
                     {
-                        std::unique_lock<std::mutex> lock(this->queueMutex);
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
                         this->condition.wait(lock, [this] { return this->stop || !this->tasks.empty(); });
                         if (this->stop && this->tasks.empty()) {
                             return;
@@ -221,7 +220,6 @@ inline ThreadPool::ThreadPool(size_t numThreads) : stop(false) {
                         task = std::move(this->tasks.front());
                         this->tasks.pop();
                     }
-
                     // 执行任务
                     task();
                 }
@@ -233,7 +231,7 @@ inline ThreadPool::ThreadPool(size_t numThreads) : stop(false) {
 // 析构函数
 inline ThreadPool::~ThreadPool() {
     {
-        std::unique_lock<std::mutex> lock(queueMutex);
+        std::unique_lock<std::mutex> lock(queue_mutex);
         stop = true;
     }
     condition.notify_all();
@@ -254,7 +252,7 @@ auto ThreadPool::enqueue(F&& f, Args&&... args) -> std::future<typename std::res
     std::future<return_type> res = task->get_future();
 
     {
-        std::unique_lock<std::mutex> lock(queueMutex);
+        std::unique_lock<std::mutex> lock(queue_mutex);
 
         // 停止状态不接受新任务
         if (stop) {
@@ -276,10 +274,10 @@ bool isPathSafe(const std::string& path) {
     }
     
     // 定义不安全的字符集
-    const std::string unsafeCharacters = "/\\:*?\"<>|";
+    const std::string unsafe_characters = "/\\:*?\"<>|";
     // 检查路径中是否包含不安全字符
     for (char c : path) {
-        if (unsafeCharacters.find(c) != std::string::npos) {
+        if (unsafe_characters.find(c) != std::string::npos) {
             return true; // 发现不安全字符
         }
     }
@@ -290,59 +288,59 @@ bool isPathSafe(const std::string& path) {
 
 std::string normalizePath(string doc_root, const std::string& path) {
     // 确保路径以文档根开头
-    std::string fullPath = doc_root + path;
+    std::string full_path = doc_root + path;
 
     // 如果路径不安全，返回一个默认路径或错误响应
-    if (!isPathSafe(fullPath)) {
+    if (!isPathSafe(full_path)) {
         return "error_404.html";
     }
 
     // 返回规范化后的路径
-    return fullPath;
+    return full_path;
 }
 
 // 自定义类表示规则
 class AccessRule {
 public:
     std::string type; // 规则类型，例如 "allow" 或 "deny"
-    std::string cidrIP; // CIDR格式的IP地址范围
+    std::string cidr_ip; // CIDR格式的IP地址范围
     struct sockaddr_in range;
 
     AccessRule(const std::string& t, const std::string& ip)
-        : type(t), cidrIP(ip) {}
+        : type(t), cidr_ip(ip) {}
 
 };
 
 // 尝试打开.htaccess，读取数据并实例化AccessRule
 std::vector<AccessRule> getRuleFromAccess() {
-    std::ifstream htaccessFile(".htaccess"); // 尝试打开.htaccess文件
-    std::vector<AccessRule> accessRules; // 存储规则的向量
+    std::ifstream htaccess_file(".htaccess"); // 尝试打开.htaccess文件
+    std::vector<AccessRule> access_rules; // 存储规则的向量
 
-    if (htaccessFile.is_open()) {
+    if (htaccess_file.is_open()) {
         std::string line;
-        while (std::getline(htaccessFile, line)) {
+        while (std::getline(htaccess_file, line)) {
             // 在此处解析每一行规则
             if (line.find("allow from") != std::string::npos) {
                 // 如果包含"allow from"，将其视为allow规则
-                std::string cidrIP = line.substr(line.find("allow from") + 11);
-                accessRules.push_back(AccessRule("allow", cidrIP));
+                std::string cidr_ip = line.substr(line.find("allow from") + 11);
+                access_rules.push_back(AccessRule("allow", cidr_ip));
             } else if (line.find("deny from") != std::string::npos) {
                 // 如果包含"deny from"，将其视为deny规则
-                std::string cidrIP = line.substr(line.find("deny from") + 10);
-                accessRules.push_back(AccessRule("deny", cidrIP));
+                std::string cidr_ip = line.substr(line.find("deny from") + 10);
+                access_rules.push_back(AccessRule("deny", cidr_ip));
             }
         }
-        htaccessFile.close();
+        htaccess_file.close();
     } else {
         std::cout << ".htaccess 文件不存在或无法打开." << std::endl;
     }
 
     // 输出存储的规则
-    for (const AccessRule& rule : accessRules) {
-        std::cout << "Rule Type: " << rule.type << ", CIDR IP: " << rule.cidrIP << std::endl;
+    for (const AccessRule& rule : access_rules) {
+        std::cout << "Rule Type: " << rule.type << ", CIDR IP: " << rule.cidr_ip << std::endl;
     }
 
-    return accessRules;
+    return access_rules;
 }
 
 // 将IP地址转换为整数
@@ -371,24 +369,24 @@ bool isIpInCidr(const std::string& ip, const std::string& cidr) {
         return false;
     }
     
-    std::string cidrIp = cidr.substr(0, slashPos);
-    std::string cidrMaskStr = cidr.substr(slashPos + 1);
-    int cidrMask = std::stoi(cidrMaskStr);
+    std::string cidr_ip = cidr.substr(0, slashPos);
+    std::string cidr_mask_str = cidr.substr(slashPos + 1);
+    int cidrMask = std::stoi(cidr_mask_str);
     
     unsigned int ipInt = ipToUint(ip);
-    unsigned int cidrIpInt = ipToUint(cidrIp);
-    unsigned int cidrMaskInt = (0xFFFFFFFFU << (32 - cidrMask));
+    unsigned int cidr_ip_int = ipToUint(cidr_ip);
+    unsigned int cidr_mask_int = (0xFFFFFFFFU << (32 - cidrMask));
     
-    return (ipInt & cidrMaskInt) == (cidrIpInt & cidrMaskInt);
+    return (ipInt & cidr_mask_int) == (cidr_ip_int & cidr_mask_int);
 }
 
 HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
     string header = http_msg.headers;
-    size_t startPos = 0;
-    size_t endPos;
-    while ((endPos = header.find("\r\n", startPos)) != std::string::npos) {
+    size_t start_pos = 0;
+    size_t end_pos;
+    while ((end_pos = header.find("\r\n", start_pos)) != std::string::npos) {
         // 获取单个header
-        std::string single_header = header.substr(startPos, endPos - startPos);
+        std::string single_header = header.substr(start_pos, end_pos - start_pos);
         size_t colonPos = single_header.find(':');
         // 校验header,如果没有:的话，则直接返回异常
         if (colonPos == std::string::npos) {
@@ -396,17 +394,17 @@ HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
             return http_msg;
         }else {
             // 记录所有的header
-            std::string firstWord = single_header.substr(0, colonPos);
-            firstWord.erase(0, firstWord.find_first_not_of(" "));  // 去除前导空格
-            firstWord.erase(firstWord.find_last_not_of(" ") + 1);  // 去除尾部空格
+            std::string first_word = single_header.substr(0, colonPos);
+            first_word.erase(0, first_word.find_first_not_of(" "));  // 去除前导空格
+            first_word.erase(first_word.find_last_not_of(" ") + 1);  // 去除尾部空格
             // 提取冒号后的内容（去除空格）
             std::string value = single_header.substr(colonPos + 1);
             value.erase(0, value.find_first_not_of(" "));  // 去除前导空格
             value.erase(value.find_last_not_of(" ") + 1);  // 去除尾部空格
             // 先存储到request_headers中，后续判断
-            http_msg.request_headers.push_back(std::make_pair(firstWord, value));
+            http_msg.request_headers.push_back(std::make_pair(first_word, value));
         }
-        startPos = endPos + 2;
+        start_pos = end_pos + 2;
     }
     return http_msg;
 }
@@ -414,17 +412,17 @@ HTTPMessage handlerRequestHeader(HTTPMessage http_msg){
 bool CheckingHostByAccessRules(string host){
     bool all_block = false;
     // 获取htaccess的数据
-    std::vector<AccessRule> accessRules = getRuleFromAccess();
+    std::vector<AccessRule> access_rules = getRuleFromAccess();
     // 根据每一个规则进行搜索
-    for (const AccessRule& rule : accessRules) {
-        if (isIpInCidr(host,rule.cidrIP)){
+    for (const AccessRule& rule : access_rules) {
+        if (isIpInCidr(host,rule.cidr_ip)){
             if (rule.type == "deny"){
                 return false;
             }else{
                 return true;
             }
         }
-        if (rule.cidrIP == "0.0.0.0/0"){
+        if (rule.cidr_ip == "0.0.0.0/0"){
             all_block  = (rule.type == "deny");
         }
     }
@@ -495,25 +493,25 @@ HTTPMessage handleHttpRequest(const std::string& request){
 // 处理路由，尝试打开文件了。
 HTTPMessage handlerUrl(HTTPMessage http_msg, string doc_root){
     
-    struct stat fileInfo;
+    struct stat file_info;
     // 判断是否追加index.html
     http_msg.path = getDefaultFilePath(http_msg.path); 
     // 判断路经是否安全
-    std::string fullPath = normalizePath(doc_root, http_msg.path);
+    std::string full_path = normalizePath(doc_root, http_msg.path);
     // 打印文件路径
     std::cerr << "Path: " << http_msg.path << std::endl;
-    std::cerr << "Fullpath: " << fullPath << std::endl;
-    if (stat(fullPath.c_str(), &fileInfo) != 0){
+    std::cerr << "full_path: " << full_path << std::endl;
+    if (stat(full_path.c_str(), &file_info) != 0){
         // 检查文件是否存在
         http_msg.response_code = 404;
         return http_msg;
-    }else if (!(fileInfo.st_mode & S_IROTH)) {
+    }else if (!(file_info.st_mode & S_IROTH)) {
         // 检查文件权限
         http_msg.response_code = 403;
         return http_msg;
     }
     // 打开文件
-    std::ifstream file(fullPath, std::ios::binary);
+    std::ifstream file(full_path, std::ios::binary);
     if (!file.is_open()) {
         // 文件无法打开，返回500响应
         http_msg.response_code = 500;
@@ -532,19 +530,19 @@ HTTPMessage handlerUrl(HTTPMessage http_msg, string doc_root){
         }
     }
     // 设置文件大小为响应大小
-    std::string fileContent((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    http_msg.content_length = fileContent.size();
+    std::string file_content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    http_msg.content_length = file_content.size();
     http_msg.response_code = 200;
-    http_msg.body = fileContent;
+    http_msg.body = file_content;
     return http_msg;
 }
 
 
 void* handleClient(void* arg){
     // 拿到传入的参数
-    ThreadArgs* threadArgs = (ThreadArgs*)arg;
-    int clientSocket = threadArgs->clientSocket;
-    std::string doc_root = threadArgs->doc_root;
+    ThreadArgs* thread_args = (ThreadArgs*)arg;
+    int client_socket = thread_args->client_socket;
+    std::string doc_root = thread_args->doc_root;
     std::time_t start_time = std::time(nullptr);
     while (true) {
         // 定义最大请求体
@@ -554,13 +552,13 @@ void* handleClient(void* arg){
         struct timeval timeout;
         timeout.tv_sec = 5;
         timeout.tv_usec = 0;
-        if (setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
             std::cerr << "Error setting timeout" << std::endl;
             break;
         }
         // 从客户端套接字读取HTTP请求
-        ssize_t bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
-        if (bytesRead <= 0) {
+        ssize_t bytes_read = recv(client_socket, buffer, sizeof(buffer), 0);
+        if (bytes_read <= 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) {
                 std::cerr << "Connection timed out" << std::endl;
             }else {
@@ -577,7 +575,7 @@ void* handleClient(void* arg){
             break;
         }
         // 处理HTTP请求
-        std::string request(buffer, bytesRead);
+        std::string request(buffer, bytes_read);
         HTTPMessage http_response = handleHttpRequest(request);
         // 校验链接是否要关闭
         if (http_response.is_close == true) {
@@ -586,21 +584,21 @@ void* handleClient(void* arg){
             break;
         }else if (http_response.response_code != 0){
             // 要是有响应代码的话，直接发送套接字
-            std::string response_str = http_response.parseResponse(clientSocket);
-            send(clientSocket, response_str.c_str(), response_str.size(), 0);
+            std::string response_str = http_response.parseResponse(client_socket);
+            send(client_socket, response_str.c_str(), response_str.size(), 0);
             continue;
         }
         // 处理路由
         http_response = handlerUrl(http_response, doc_root);
         // 其他情况发送套接字
-        std::string response_str = http_response.parseResponse(clientSocket);
-        send(clientSocket, response_str.c_str(), response_str.size(), 0);
+        std::string response_str = http_response.parseResponse(client_socket);
+        send(client_socket, response_str.c_str(), response_str.size(), 0);
     }
-    close(clientSocket);
+    close(client_socket);
     pthread_exit(NULL);
 }
 
-void handlerWithThread(ThreadPool& threadPool, int clientSocket, string doc_root) {
+void handlerWithThread(ThreadPool& thread_pool, int client_socket, string doc_root) {
     std::time_t start_time = std::time(nullptr);
     while (true) {
         // 定义最大请求体
@@ -610,13 +608,13 @@ void handlerWithThread(ThreadPool& threadPool, int clientSocket, string doc_root
         struct timeval timeout;
         timeout.tv_sec = 5;
         timeout.tv_usec = 0;
-        if (setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
             std::cerr << "Error setting timeout" << std::endl;
             break;
         }
         // 从客户端套接字读取HTTP请求
-        ssize_t bytesRead = recv(clientSocket, buffer, sizeof(buffer), 0);
-        if (bytesRead <= 0) {
+        ssize_t bytes_read = recv(client_socket, buffer, sizeof(buffer), 0);
+        if (bytes_read <= 0) {
             if (errno == EWOULDBLOCK || errno == EAGAIN) {
                 std::cerr << "Connection timed out" << std::endl;
             }else {
@@ -633,7 +631,7 @@ void handlerWithThread(ThreadPool& threadPool, int clientSocket, string doc_root
             break;
         }
         // 处理HTTP请求
-        std::string request(buffer, bytesRead);
+        std::string request(buffer, bytes_read);
         HTTPMessage http_response = handleHttpRequest(request);
         // 校验链接是否要关闭
         if (http_response.is_close == true) {
@@ -642,48 +640,48 @@ void handlerWithThread(ThreadPool& threadPool, int clientSocket, string doc_root
             break;
         }else if (http_response.response_code != 0){
             // 要是有响应代码的话，直接发送套接字
-            std::string response_str = http_response.parseResponse(clientSocket);
-            send(clientSocket, response_str.c_str(), response_str.size(), 0);
+            std::string response_str = http_response.parseResponse(client_socket);
+            send(client_socket, response_str.c_str(), response_str.size(), 0);
             continue;
         } 
         // 处理路由
         http_response = handlerUrl(http_response, doc_root);
         // 其他情况发送套接字
-        std::string response_str = http_response.parseResponse(clientSocket);
-        send(clientSocket, response_str.c_str(), response_str.size(), 0);
+        std::string response_str = http_response.parseResponse(client_socket);
+        send(client_socket, response_str.c_str(), response_str.size(), 0);
     }
-    close(clientSocket);
+    close(client_socket);
 }
 
 
 void start_httpd(unsigned short port, string doc_root, int thread_num) {
-    int serverSocket, clientSocket;
-    struct sockaddr_in serverAddr, clientAddr;
-    socklen_t clientAddrLen = sizeof(clientAddr);
+    int server_socket, client_socket;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t clientAddrLen = sizeof(client_addr);
 
     // 创建套接字
-    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket == -1) {
+    server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1) {
         std::cerr << "Error creating socket" << std::endl;
         return;
     }
 
     // 设置服务器地址和端口
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
-    serverAddr.sin_port = htons(port);
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port);
 
     // 绑定套接字
-    if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == -1) {
+    if (bind(server_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
         std::cerr << "Error binding" << std::endl;
-        close(serverSocket);
+        close(server_socket);
         return;
     }
 
     // 监听连接
-    if (listen(serverSocket, 5) == -1) {
+    if (listen(server_socket, 5) == -1) {
         std::cerr << "Error listening" << std::endl;
-        close(serverSocket);
+        close(server_socket);
         return;
     }
 
@@ -693,8 +691,8 @@ void start_httpd(unsigned short port, string doc_root, int thread_num) {
     // 多线程实现方式
     // while (true) {
     //     // 接受客户端连接Implemented thread pooling
-    //     clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
-    //     if (clientSocket == -1) {
+    //     client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &clientAddrLen);
+    //     if (client_socket == -1) {
     //         std::cerr << "Error accepting connection" << std::endl;
     //         continue;
     //     }
@@ -702,12 +700,12 @@ void start_httpd(unsigned short port, string doc_root, int thread_num) {
     //     // 使用pthread创建一个新线程来处理客户端连接
     //     pthread_t clientThread;
     //     ThreadArgs args;
-    //     args.clientSocket = clientSocket;
+    //     args.client_socket = client_socket;
     //     args.doc_root = doc_root;
 
     //     if (pthread_create(&clientThread, NULL, handleClient, &args) != 0) {
     //         std::cerr << "Error creating thread" << std::endl;
-    //         close(clientSocket);
+    //         close(client_socket);
     //         continue;
     //     }
 
@@ -716,19 +714,19 @@ void start_httpd(unsigned short port, string doc_root, int thread_num) {
     // }
 
     // 创建线程池
-    ThreadPool threadPool(thread_num);
+    ThreadPool thread_pool(thread_num);
     // 线程池实现方式
     while (true) {
-        struct sockaddr_in clientAddr;
-        socklen_t clientAddrLen = sizeof(clientAddr);
-        int clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddr, &clientAddrLen);
-        if (clientSocket == -1) {
+        struct sockaddr_in client_addr;
+        socklen_t clientAddrLen = sizeof(client_addr);
+        int client_socket = accept(server_socket, (struct sockaddr*)&client_addr, &clientAddrLen);
+        if (client_socket == -1) {
             cerr << "Error accepting connection" << endl;
             continue;
         }
-        threadPool.enqueue(handlerWithThread, std::ref(threadPool), clientSocket, doc_root);
+        thread_pool.enqueue(handlerWithThread, std::ref(thread_pool), client_socket, doc_root);
     }
 
     // 关闭服务器套接字
-    close(serverSocket);
+    close(server_socket);
 }
