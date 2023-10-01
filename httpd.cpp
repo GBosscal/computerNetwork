@@ -292,11 +292,12 @@ bool isPathSafe(const std::string& path) {
     }
     
     // 定义不安全的字符集
-    const std::string unsafe_characters = "/\\:*?\"<>|";
+    const std::string unsafe_characters = "\\:*?\"<>|";
     // 检查路径中是否包含不安全字符
     for (char c : path) {
         if (unsafe_characters.find(c) != std::string::npos) {
-            return true; // 发现不安全字符
+            std::cerr << "Path: " << c << unsafe_characters.find(c) << std::endl;
+            return false; // 发现不安全字符
         }
     }
 

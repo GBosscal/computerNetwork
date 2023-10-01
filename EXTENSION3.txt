@@ -1,10 +1,11 @@
 Q1. Does the latency of a small request vary between the two threading models for pools of size 5 when evaluated at concurrency levels of (2,3,4,5}?
-
+在大小为 5 的线程池中，两个线程模型（使用pthread创建线程和使用ThreadPool类创建线程）之间对小请求的延迟没有太多的区别。因为并发数量小于线程池的线程总数。
 
 Q2. Does the throughput of large requests vary between the two threading models for pools of size 5 when evalutaed at concurrency levels of (2,3,4,5)?
-
+在大小为 5 的线程池中，两个线程模型（使用pthread创建线程和使用ThreadPool类创建线程）之间对于大请求的吞吐量也没有太大的区别，因为并发数量小于线程池的线程总数。
 
 Q3. Does the latency of a small request vary between the two threading models for pools of size 5 when evaluated at concurrency levels of (10,20)?
-
+在大小为 5 的线程池，两个线程模型之间的小请求延迟可能会有显著差异。使用pthread创建线程的模型可能会在高并发情况下面临线程创建和管理方面的挑战，导致较高的延迟。而使用ThreadPool类创建线程的模型则能够更有效地管理线程，降低延迟。
 
 Q4. Does the throughput of large requests vary between the two threading models for pools of size 5 when evalutaed at concurrency levels of {10,20)?
+在大小为 5 的线程池的两种线程模型之间的大请求吞吐量可能会有较为显著的差异。使用ThreadPool类创建线程的模型可能更好地管理线程，有效地处理大量请求，因此可能在高并发情况下具有更高的吞吐量。而使用pthread创建线程的模型可能面临线程创建和管理的性能瓶颈，导致吞吐量较低。
