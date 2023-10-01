@@ -549,76 +549,76 @@ HTTPMessage handleHttpRequest(const std::string& request){
 }
 
 // 处理客户端的方法（多线程）
-void* handleClient(void* arg){
-    // 拿到传入的参数
-    ThreadArgs* thread_args = (ThreadArgs*)arg;
-    int client_socket = thread_args->client_socket;
-    std::string doc_root = thread_args->doc_root;
-    std::time_t last_time = std::time(nullptr);
+// void* handleClient(void* arg){
+//     // 拿到传入的参数
+//     ThreadArgs* thread_args = (ThreadArgs*)arg;
+//     int client_socket = thread_args->client_socket;
+//     std::string doc_root = thread_args->doc_root;
+//     std::time_t last_time = std::time(nullptr);
 
-    while (true) {
-        // 定义最大请求体
-        char buffer[4096];
-        memset(buffer, 0, sizeof(buffer));
-        // 通过socket来强行中断链接
-        struct timeval timeout;
-        timeout.tv_sec = 5;
-        timeout.tv_usec = 0;
-        if (setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-            std::cerr << "Error setting timeout" << std::endl;
-            break;
-        }
-        // 从客户端套接字读取HTTP请求
-        ssize_t bytes_read = recv(client_socket, buffer, sizeof(buffer), 0);
-        if (bytes_read <= 0) {
-            if (errno == EWOULDBLOCK || errno == EAGAIN) {
-                std::cerr << "Connection timed out" << std::endl;
-            }else {
-                std::cerr << "Read data error" << std::endl;
-            }
-            // 超时/读取数据异常都关掉客户端套接字
-            break;
-        }
-        // 校验是否超时（但是好像recv会一直等到能拿数据，所以不会工作）
-        std::time_t end_time = std::time(nullptr);
-        double elapsed_seconds = std::difftime(end_time, last_time);
-        if (elapsed_seconds > 5) {
-            // 关闭客户端套接字
-            break;
-        }
-        // 处理HTTP请求
-        std::string request(buffer, bytes_read);
-        HTTPMessage http_response = handleHttpRequest(request);
-        // 校验链接是否要关闭
-        if (http_response.is_close == true) {
-            // 关闭客户端套接字
-            std::cerr << "Connection close" << std::endl;
-            break;
-        }else if (http_response.response_code != 0){
-            // 要是有响应代码的话，直接发送套接字
-            std::string response_str = http_response.parseResponse(client_socket);
-            send(client_socket, response_str.c_str(), response_str.size(), 0);
-            continue;
-        }
-        // 处理路由
-        http_response = handlerUrl(http_response, doc_root);
-        // 足够大以容纳格式化的时间字符串
-        char time_str[80]; 
-        // 使用strftime将time_t格式化为字符串
-        std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", std::localtime(&last_time));
-        // 追加上次请求时间到响应中
-        http_response.response_time = time_str;
-        // 其他情况发送套接字
-        std::string response_str = http_response.parseResponse(client_socket);
-        send(client_socket, response_str.c_str(), response_str.size(), 0);
-        last_time = std::time(nullptr);
-    }
-    close(client_socket);
-    pthread_exit(NULL);
-}
+//     while (true) {
+//         // 定义最大请求体
+//         char buffer[4096];
+//         memset(buffer, 0, sizeof(buffer));
+//         // 通过socket来强行中断链接
+//         struct timeval timeout;
+//         timeout.tv_sec = 5;
+//         timeout.tv_usec = 0;
+//         if (setsockopt(client_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+//             std::cerr << "Error setting timeout" << std::endl;
+//             break;
+//         }
+//         // 从客户端套接字读取HTTP请求
+//         ssize_t bytes_read = recv(client_socket, buffer, sizeof(buffer), 0);
+//         if (bytes_read <= 0) {
+//             if (errno == EWOULDBLOCK || errno == EAGAIN) {
+//                 std::cerr << "Connection timed out" << std::endl;
+//             }else {
+//                 std::cerr << "Read data error" << std::endl;
+//             }
+//             // 超时/读取数据异常都关掉客户端套接字
+//             break;
+//         }
+//         // 校验是否超时（但是好像recv会一直等到能拿数据，所以不会工作）
+//         std::time_t end_time = std::time(nullptr);
+//         double elapsed_seconds = std::difftime(end_time, last_time);
+//         if (elapsed_seconds > 5) {
+//             // 关闭客户端套接字
+//             break;
+//         }
+//         // 处理HTTP请求
+//         std::string request(buffer, bytes_read);
+//         HTTPMessage http_response = handleHttpRequest(request);
+//         // 校验链接是否要关闭
+//         if (http_response.is_close == true) {
+//             // 关闭客户端套接字
+//             std::cerr << "Connection close" << std::endl;
+//             break;
+//         }else if (http_response.response_code != 0){
+//             // 要是有响应代码的话，直接发送套接字
+//             std::string response_str = http_response.parseResponse(client_socket);
+//             send(client_socket, response_str.c_str(), response_str.size(), 0);
+//             continue;
+//         }
+//         // 处理路由
+//         http_response = handlerUrl(http_response, doc_root);
+//         // 足够大以容纳格式化的时间字符串
+//         char time_str[80]; 
+//         // 使用strftime将time_t格式化为字符串
+//         std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", std::localtime(&last_time));
+//         // 追加上次请求时间到响应中
+//         http_response.response_time = time_str;
+//         // 其他情况发送套接字
+//         std::string response_str = http_response.parseResponse(client_socket);
+//         send(client_socket, response_str.c_str(), response_str.size(), 0);
+//         last_time = std::time(nullptr);
+//     }
+//     close(client_socket);
+//     pthread_exit(NULL);
+// }
 
 // 处理客户端的方法（线程池）
-void handlerWithThread(ThreadPool& thread_pool, int client_socket, string doc_root) {
+void handlerWithThread(int client_socket, string doc_root) {
     std::time_t last_time = std::time(nullptr);
     while (true) {
         // 定义最大请求体
@@ -682,9 +682,11 @@ void handlerWithThread(ThreadPool& thread_pool, int client_socket, string doc_ro
 
 // 启动一个http的服务器
 void start_httpd(unsigned short port, string doc_root, int thread_num) {
-    int server_socket, client_socket;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t clientAddrLen = sizeof(client_addr);
+    // int server_socket, client_socket;
+    int server_socket;
+    struct sockaddr_in server_addr;
+    // struct sockaddr_in server_addr, client_addr;
+    // socklen_t clientAddrLen = sizeof(client_addr);
 
     // 创建套接字
     server_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -751,7 +753,7 @@ void start_httpd(unsigned short port, string doc_root, int thread_num) {
             cerr << "Error accepting connection" << endl;
             continue;
         }
-        thread_pool.enqueue(handlerWithThread, std::ref(thread_pool), client_socket, doc_root);
+        thread_pool.enqueue(handlerWithThread, client_socket, doc_root);
     }
 
     // 关闭服务器套接字
